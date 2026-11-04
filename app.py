@@ -1397,7 +1397,7 @@ def identificar_tipo_pergunta(pergunta):
 # CRIAR TRECHOS
 # =========================================================
 
-def criar_trechos(texto, tamanho=700, sobreposicao=120):
+def criar_trechos(texto, tamanho=1400, sobreposicao=150):
 
     trechos = []
 
@@ -1755,6 +1755,7 @@ def perguntar():
             FROM documentos
             WHERE usuario_id = ?
             AND projeto_id = ?
+            ORDER BY id
             """,
             (
                 session["usuario_id"],
@@ -1811,18 +1812,16 @@ def perguntar():
         pergunta,
         documentos
     )
-    
-    if not trechos:
+
+    LIMIAR_PONTOS_MINIMO = 20  # ponto de partida — calibre com os valores reais
+
+    if not trechos or trechos[0]["pontos"] < LIMIAR_PONTOS_MINIMO:
         return jsonify({
             "resposta": (
                 "Não encontrei isso nos documentos. "
                 "Consulte o técnico de segurança do trabalho."
             )
         })
-        
-    contexto_pdf = montar_contexto_pdf(
-        trechos
-    )
 
 
     # -----------------------------------------------------
