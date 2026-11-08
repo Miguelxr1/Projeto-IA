@@ -6,7 +6,7 @@ import uuid
 import unicodedata
 import hashlib
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, Counter
 
 from datetime import datetime
 from functools import wraps
@@ -1506,8 +1506,10 @@ def buscar_trechos_pdf(
     else:
         documentos_para_busca = documentos
 
-    palavras = expandir_palavras(palavras_importantes(pergunta))
+    palavras_originais = palavras_importantes(pergunta)
+    palavras = expandir_palavras(palavras_originais)
     trechos = []
+    sumarios_descartados = 0
 
     for documento in documentos_para_busca:
 
@@ -1520,9 +1522,20 @@ def buscar_trechos_pdf(
         partes = criar_trechos(texto)
 
         for indice, parte in enumerate(partes):
-
             trecho = parte["texto"]
-            
+
+            numeros_item = re.findall(
+                r"\d{1,2}\.\d{1,2}(?:\.\d{1,2})?", trecho
+            )
+            eh_sumario = False
+            if len(numeros_item) >= 4:
+                palavras_totais = len(trecho.split())
+                eh_sumario = (palavras_totais / len(numeros_item)) < 8
+
+            if eh_sumario:
+                sumarios_descartados += 1
+                continue
+
             relevante_inicio = (
                 tipo["resumo"] or tipo["assunto"] or tipo["objetivo"]
                 or tipo["titulo"] or tipo["primeiro_paragrafo"]
@@ -1576,8 +1589,24 @@ def buscar_trechos_pdf(
                     "tipo": parte["tipo"]
                 })
                 
+    print("DIAGNOSTICO sumarios descartados:", sumarios_descartados, flush=True)
+    print("DIAGNOSTICO trechos com pontos > 0:", len(trechos), flush=True)
+
     minimo = min(2, len(palavras))
     trechos = [t for t in trechos if t["palavras"] >= minimo]
+
+    print("DIAGNOSTICO depois do filtro de palavras (minimo={}):".format(minimo), len(trechos), flush=True)
+
+    palavras_para_teto = min(len(palavras_originais), 4)
+    pontos_maximos_possiveis = max(palavras_para_teto, 1) * 12
+    PROPORCAO_MINIMA = 0.4  # ponto de partida — calibre com os valores reais
+
+    trechos = [
+        t for t in trechos
+        if t["pontos"] / pontos_maximos_possiveis >= PROPORCAO_MINIMA
+    ]
+
+    print("DIAGNOSTICO depois do filtro de proporção (teto={}):".format(pontos_maximos_possiveis), len(trechos), flush=True)
 
     trechos.sort(
         key=lambda item: (
@@ -1600,7 +1629,7 @@ def buscar_trechos_pdf(
         textos_usados.add(chave)
         selecionados.append(trecho)
 
-        if len(selecionados) >= 3:
+        if len(selecionados) >= 5:
             break
 
     for t in selecionados:
@@ -1771,6 +1800,7 @@ def perguntar():
             FROM documentos
             WHERE usuario_id = ?
             AND projeto_id IS NULL
+            ORDER BY id
             """,
             (
                 session["usuario_id"],
@@ -1822,6 +1852,10 @@ def perguntar():
                 "Consulte o técnico de segurança do trabalho."
             )
         })
+
+    contexto_pdf = montar_contexto_pdf(
+        trechos
+    )
 
 
     # -----------------------------------------------------
@@ -2212,16 +2246,37 @@ def upload():
             caminho
         )
 
-        texto = ""
+        textos_paginas = [
+            pagina.extract_text() or ""
+            for pagina in leitor.pages
+        ]
 
-        for pagina in leitor.pages:
+        # Remove linhas que se repetem na maioria das páginas
+        # (cabeçalho/rodapé do PDF), que senão viram "trechos"
+        # de alta pontuação sem relação com a pergunta.
+        linhas_por_pagina = [
+            {linha.strip() for linha in pagina.split("\n") if linha.strip()}
+            for pagina in textos_paginas
+        ]
 
-            texto += (
-                pagina.extract_text()
-                or ""
-            )
+        contagem_linhas = Counter(
+            linha
+            for linhas in linhas_por_pagina
+            for linha in linhas
+        )
 
-            texto += "\n"
+        total_paginas = len(textos_paginas)
+        linhas_repetidas = {
+            linha for linha, vezes in contagem_linhas.items()
+            if total_paginas > 2 and vezes >= total_paginas * 0.6
+        }
+
+        texto = "\n".join(
+            linha
+            for pagina in textos_paginas
+            for linha in pagina.split("\n")
+            if linha.strip() not in linhas_repetidas
+        )
 
     except Exception as erro:
 
